@@ -131,6 +131,8 @@
       box-shadow: 0 2px 5px rgba(25,25,25,.16); overflow: hidden; cursor: grab; user-select: none;
     }
     .event:active { cursor: grabbing; }
+    .event.continues { border-bottom-right-radius: 3px; border-bottom-left-radius: 3px; }
+    .event.continued { border-top: 3px dashed rgba(0,0,0,.35); border-top-right-radius: 3px; border-top-left-radius: 3px; cursor: pointer; }
     .event-title { font-weight: 700; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .event-time { font-size: 10px; opacity: .75; }
     .resize-handle { position: absolute; bottom: 0; left: 0; right: 0; height: 8px; cursor: ns-resize; }
@@ -281,8 +283,9 @@
         <div class="field full"><label for="activityTitle">Activity</label><input id="activityTitle" maxlength="60" required placeholder="Example: Biology class"></div>
         <div class="field"><label for="category">Category</label><select id="category" required></select></div>
         <div class="field"><span>Color</span><div class="color-row" id="colorRow"></div></div>
-        <div class="field"><label for="startTime">Start time</label><input id="startTime" type="time" step="1800" required></div>
-        <div class="field"><label for="endTime">End time</label><input id="endTime" type="time" step="1800" required></div>
+        <div class="field"><label for="startTime">Start time</label><input id="startTime" type="time" step="60" required></div>
+        <div class="field"><label for="endTime">End time</label><input id="endTime" type="time" step="60" required></div>
+        <div class="field full"><span style="font-weight:400;color:#747474">If the end time is earlier than the start time, the activity will continue into the next day.</span></div>
         <div class="field full"><span>Days</span><div class="day-picks" id="dayPicks"></div></div>
         <div class="field full"><label for="notes">Notes <span style="font-weight:400;color:#747474">(optional)</span></label><textarea id="notes" rows="2" maxlength="180" placeholder="Location, assignment, or reminder"></textarea></div>
       </div>
@@ -301,7 +304,7 @@
       const CATEGORIES = {
         school:   { label: 'School (Work/Study)', color: '#FFC627', school: true },
         work:     { label: 'Work', color: '#00A3E0', school: false },
-        health:   { label: 'Health/Sleep', color: '#FF7F32', school: false },
+        health:   { label: 'Health', color: '#FF7F32', school: false },
         personal: { label: 'Personal', color: '#78BE20', school: false },
         other:    { label: 'Other', color: '#747474', school: false }
       };
@@ -347,10 +350,16 @@
         return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${suffix}`;
       }
       function inputTime(minutes) {
-        const bounded = clamp(minutes, 0, 1439), h = Math.floor(bounded / 60), m = bounded % 60;
+        const normalized = ((Math.round(minutes) % 1440) + 1440) % 1440;
+        const h = Math.floor(normalized / 60), m = normalized % 60;
         return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
       }
       function parseTime(value) { const [h,m] = value.split(':').map(Number); return h * 60 + m; }
+      function clockText(minutes) { return timeText(((minutes % 1440) + 1440) % 1440); }
+      function eventTimeLabel(event) {
+        const nextDay = event.end > 1440 || (event.end === 1440 && event.start > 0);
+        return `${clockText(event.start)}–${clockText(event.end)}${nextDay ? ' (+1 day)' : ''}`;
+      }
       function announce(message) {
         $('toast').textContent = message; $('toast').classList.add('show');
         clearTimeout(announce.timer); announce.timer = setTimeout(() => $('toast').classList.remove('show'), 2200);
@@ -383,22 +392,33 @@
       function render() {
         document.querySelectorAll('.event').forEach(el => el.remove());
         state.events.forEach(event => {
-          const col = document.querySelector(`.day-column[data-day="${event.day}"]`);
-          if (!col) return;
-          const el = document.createElement('div');
-          el.className = 'event'; el.dataset.id = event.id;
-          el.style.top = `${event.start / 30 * SLOT_PX}px`;
-          el.style.height = `${Math.max(SLOT_PX, (event.end - event.start) / 30 * SLOT_PX)}px`;
-          el.style.background = event.color;
-          el.style.color = readableTextColor(event.color);
-          el.title = `${event.title}\n${timeText(event.start)}–${timeText(event.end)}${event.notes ? '\n' + event.notes : ''}`;
-          el.innerHTML = `<div class="event-title"></div><div class="event-time">${timeText(event.start)}–${timeText(event.end)}</div><div class="resize-handle" aria-hidden="true"></div>`;
-          el.querySelector('.event-title').textContent = event.title;
-          el.addEventListener('pointerdown', startEventInteraction);
-          el.addEventListener('dblclick', () => openEditor(event));
-          col.appendChild(el);
+          renderEventSegment(event, event.day, event.start, Math.min(event.end, 1440), false, event.end > 1440);
+          if (event.end > 1440) renderEventSegment(event, (event.day + 1) % 7, 0, event.end - 1440, true, false);
         });
         updateProgress(); saveState();
+      }
+
+      function renderEventSegment(event, day, segmentStart, segmentEnd, continued, continues) {
+        const col = document.querySelector(`.day-column[data-day="${day}"]`);
+        if (!col || segmentEnd <= segmentStart) return;
+        const el = document.createElement('div');
+        el.className = `event${continued ? ' continued' : ''}${continues ? ' continues' : ''}`;
+        el.dataset.id = event.id;
+        el.dataset.segment = continued ? 'continued' : 'start';
+        el.style.top = `${segmentStart / 30 * SLOT_PX}px`;
+        el.style.height = `${Math.max(SLOT_PX, (segmentEnd - segmentStart) / 30 * SLOT_PX)}px`;
+        el.style.background = event.color;
+        el.style.color = readableTextColor(event.color);
+        el.title = `${event.title}\n${eventTimeLabel(event)}${event.notes ? '\n' + event.notes : ''}`;
+        const segmentTime = continued ? `Continued · until ${clockText(event.end)}` : eventTimeLabel(event);
+        el.innerHTML = `<div class="event-title"></div><div class="event-time">${segmentTime}</div>${continues ? '' : '<div class="resize-handle" aria-hidden="true"></div>'}`;
+        el.querySelector('.event-title').textContent = event.title;
+        el.addEventListener('pointerdown', e => {
+          if (continued && !e.target.classList.contains('resize-handle')) return;
+          startEventInteraction(e);
+        });
+        el.addEventListener('dblclick', () => openEditor(event));
+        col.appendChild(el);
       }
 
       function updateProgress() {
@@ -469,10 +489,10 @@
         const dyMinutes = snap((e.clientY - interaction.originY) / SLOT_PX * 30);
         if (Math.abs(e.clientY-interaction.originY) > 4 || Math.abs(e.clientX-interaction.originX) > 4) interaction.moved = true;
         if (interaction.type === 'resize') {
-          interaction.event.end = clamp(interaction.originEnd + dyMinutes, interaction.event.start + 30, 1440);
+          interaction.event.end = clamp(interaction.originEnd + dyMinutes, interaction.event.start + 1, interaction.event.start + 1440);
         } else {
           const duration = interaction.originEnd - interaction.originStart;
-          interaction.event.start = clamp(interaction.originStart + dyMinutes, 0, 1440-duration);
+          interaction.event.start = clamp(interaction.originStart + dyMinutes, 0, 1439);
           interaction.event.end = interaction.event.start + duration;
           const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.day-column');
           if (target) interaction.event.day = Number(target.dataset.day);
@@ -499,7 +519,7 @@
         $('activityTitle').value = event?.title || '';
         $('category').value = event?.category || '';
         $('startTime').value = inputTime(event?.start ?? defaults.start ?? 540);
-        $('endTime').value = inputTime(event?.end === 1440 ? 1439 : event?.end ?? defaults.end ?? 600);
+        $('endTime').value = inputTime(event?.end ?? defaults.end ?? 600);
         $('notes').value = event?.notes || '';
         const selectedDay = event?.day ?? defaults.day ?? 0;
         document.querySelectorAll('[name="days"]').forEach(box => box.checked = Number(box.value) === selectedDay);
@@ -513,8 +533,7 @@
         e.preventDefault();
         const days = [...document.querySelectorAll('[name="days"]:checked')].map(x => Number(x.value));
         if (!days.length) return announce('Choose at least one day');
-        const start = parseTime($('startTime').value), rawEnd = parseTime($('endTime').value), end = rawEnd === 0 && start > 0 ? 1440 : rawEnd;
-        if (end <= start) return announce('End time must be later than start time');
+        const start = parseTime($('startTime').value), rawEnd = parseTime($('endTime').value), end = rawEnd <= start ? rawEnd + 1440 : rawEnd;
         const editingId = $('editingId').value;
         const base = { title: $('activityTitle').value.trim(), category: $('category').value, color: document.querySelector('[name="color"]:checked').value, start, end, notes: $('notes').value.trim() };
         if (editingId) {
@@ -529,8 +548,8 @@
         state.events = state.events.filter(e => e.id !== id); dialog.close(); render(); announce('Activity deleted');
       }
       function exportSchedule() {
-        const rows = [['Day','Activity','Category','Start','End','Hours','Notes']];
-        [...state.events].sort((a,b) => a.day-b.day || a.start-b.start).forEach(e => rows.push([DAYS[e.day],e.title,CATEGORIES[e.category]?.label || e.category,timeText(e.start),timeText(e.end),((e.end-e.start)/60).toFixed(1),e.notes || '']));
+        const rows = [['Day','Activity','Category','Start','End','Ends','Hours','Notes']];
+        [...state.events].sort((a,b) => a.day-b.day || a.start-b.start).forEach(e => rows.push([DAYS[e.day],e.title,CATEGORIES[e.category]?.label || e.category,clockText(e.start),clockText(e.end),e.end > 1440 || (e.end === 1440 && e.start > 0) ? DAYS[(e.day+1)%7] : DAYS[e.day],((e.end-e.start)/60).toFixed(2),e.notes || '']));
         const csv = rows.map(row => row.map(value => `"${String(value).replaceAll('"','""')}"`).join(',')).join('\n');
         const blob = new Blob([csv], {type:'text/csv;charset=utf-8'}), url = URL.createObjectURL(blob), link = document.createElement('a');
         link.href = url; link.download = 'my-week-planner.csv'; link.click(); URL.revokeObjectURL(url); announce('Schedule exported');
