@@ -64,6 +64,8 @@
     }
     .attendance-option input:checked + span { border-color: var(--asu-gold); background: var(--asu-gold); color: var(--asu-black); box-shadow: 0 0 0 2px rgba(255,198,39,.28); font-weight: 700; }
     .attendance-option input:focus-visible + span { outline: 3px solid var(--asu-gold); outline-offset: 2px; }
+    .session-choice { margin-top: 17px; padding-top: 16px; border-top: 1px solid #484848; }
+    .session-choice h3 { margin: 0 0 11px; color: #D0D0D0; font-size: 12px; letter-spacing: .03em; }
     .workload-prompt { margin: 14px 0 0; color: #D0D0D0; font-size: 13px; }
     .rate-note { margin: 5px 0 0; color: #BFBFBF; font-size: 12px; }
     .credit-row { display: flex; align-items: center; gap: 10px; }
@@ -232,6 +234,20 @@
             <label class="attendance-option"><input type="radio" name="attendance" value="campus" required><span>On Campus</span></label>
           </div>
         </section>
+        <section class="side-section semester-section">
+          <h2>Which semester are you planning for? <span class="required-mark" aria-hidden="true">*</span></h2>
+          <div class="attendance-options" role="radiogroup" aria-label="Semester" aria-required="true">
+            <label class="attendance-option"><input type="radio" name="semester" value="fallSpring" required><span>Fall/Spring</span></label>
+            <label class="attendance-option"><input type="radio" name="semester" value="summer" required><span>Summer</span></label>
+          </div>
+          <div class="session-choice" id="summerSessionGroup" hidden>
+            <h3>Which summer session? <span class="required-mark" aria-hidden="true">*</span></h3>
+            <div class="attendance-options" role="radiogroup" aria-label="Summer session" aria-required="true">
+              <label class="attendance-option"><input type="radio" name="summerSession" value="ab"><span>Session A/B</span></label>
+              <label class="attendance-option"><input type="radio" name="summerSession" value="c"><span>Session C</span></label>
+            </div>
+          </div>
+        </section>
         <section class="side-section">
           <h2>School workload</h2>
           <label class="credit-row" for="credits"><input id="credits" type="number" min="0" max="30" step="1" value="6"><span>credit hours</span></label>
@@ -302,7 +318,7 @@
     (() => {
       const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
       const CATEGORIES = {
-        school:   { label: 'School (Assignments/Study)', color: '#FFC627', school: true },
+        school:   { label: 'School (Work/Study)', color: '#FFC627', school: true },
         work:     { label: 'Work', color: '#00A3E0', school: false },
         health:   { label: 'Health', color: '#FF7F32', school: false },
         personal: { label: 'Personal', color: '#78BE20', school: false },
@@ -334,10 +350,12 @@
               color: LEGACY_COLORS[String(event.color).toLowerCase()] || event.color
             }));
             const attendance = saved.attendance === 'online' || saved.attendance === 'campus' ? saved.attendance : null;
-            return { credits: Number(saved.credits) || 0, attendance, events: saved.events };
+            const semester = saved.semester === 'fallSpring' || saved.semester === 'summer' ? saved.semester : null;
+            const summerSession = saved.summerSession === 'ab' || saved.summerSession === 'c' ? saved.summerSession : null;
+            return { credits: Number(saved.credits) || 0, attendance, semester, summerSession, events: saved.events };
           }
         } catch (_) {}
-        return { credits: 6, attendance: null, events: [] };
+        return { credits: 6, attendance: null, semester: null, summerSession: null, events: [] };
       }
       function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
       function uid() { return crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(16).slice(2); }
@@ -359,6 +377,28 @@
       function eventTimeLabel(event) {
         const nextDay = event.end > 1440 || (event.end === 1440 && event.start > 0);
         return `${clockText(event.start)}–${clockText(event.end)}${nextDay ? ' (+1 day)' : ''}`;
+      }
+      function eventSegments(event) {
+        const segments = [{ day: Number(event.day), start: event.start, end: Math.min(event.end, 1440) }];
+        if (event.end > 1440) segments.push({ day: (Number(event.day) + 1) % 7, start: 0, end: event.end - 1440 });
+        return segments.filter(segment => segment.end > segment.start);
+      }
+      function findOverlap(candidate, pool = state.events, excludeId = null) {
+        const candidateSegments = eventSegments(candidate);
+        for (const other of pool) {
+          if (excludeId && other.id === excludeId) continue;
+          for (const candidateSegment of candidateSegments) {
+            for (const otherSegment of eventSegments(other)) {
+              const overlaps = candidateSegment.day === otherSegment.day && candidateSegment.start < otherSegment.end && candidateSegment.end > otherSegment.start;
+              if (overlaps) return { other, segment: otherSegment };
+            }
+          }
+        }
+        return null;
+      }
+      function overlapMessage(conflict) {
+        const { other, segment } = conflict;
+        return `That time overlaps “${other.title}” on ${DAYS[segment.day]} (${clockText(segment.start)}–${clockText(segment.end)}).`;
       }
       function announce(message) {
         $('toast').textContent = message; $('toast').classList.add('show');
@@ -385,17 +425,26 @@
           const attendanceInput = document.querySelector(`[name="attendance"][value="${state.attendance}"]`);
           if (attendanceInput) attendanceInput.checked = true;
         }
+        if (state.semester) {
+          const semesterInput = document.querySelector(`[name="semester"][value="${state.semester}"]`);
+          if (semesterInput) semesterInput.checked = true;
+        }
+        if (state.summerSession) {
+          const sessionInput = document.querySelector(`[name="summerSession"][value="${state.summerSession}"]`);
+          if (sessionInput) sessionInput.checked = true;
+        }
         render();
         requestAnimationFrame(() => { $('plannerScroll').scrollTop = 7 * SLOT_PX * 2; });
       }
 
-      function render() {
+      function render(persist = true) {
         document.querySelectorAll('.event').forEach(el => el.remove());
         state.events.forEach(event => {
           renderEventSegment(event, event.day, event.start, Math.min(event.end, 1440), false, event.end > 1440);
           if (event.end > 1440) renderEventSegment(event, (event.day + 1) % 7, 0, event.end - 1440, true, false);
         });
-        updateProgress(); saveState();
+        updateProgress();
+        if (persist) saveState();
       }
 
       function renderEventSegment(event, day, segmentStart, segmentEnd, continued, continues) {
@@ -424,17 +473,33 @@
       function updateProgress() {
         state.credits = clamp(Number($('credits').value) || 0, 0, 30);
         const attendanceInput = document.querySelector('[name="attendance"]:checked');
+        const semesterInput = document.querySelector('[name="semester"]:checked');
+        const sessionInput = document.querySelector('[name="summerSession"]:checked');
         state.attendance = attendanceInput?.value || null;
-        const hasAttendance = Boolean(state.attendance);
-        $('workloadPrompt').hidden = hasAttendance;
-        $('workloadResults').hidden = !hasAttendance;
-        if (!hasAttendance) return;
-        const hoursPerCredit = state.attendance === 'online' ? 6 : 3;
+        state.semester = semesterInput?.value || null;
+        state.summerSession = sessionInput?.value || null;
+        const isSummer = state.semester === 'summer';
+        $('summerSessionGroup').hidden = !isSummer;
+        document.querySelectorAll('[name="summerSession"]').forEach(input => { input.required = isSummer; });
+        const isReady = Boolean(state.attendance && state.semester && (!isSummer || state.summerSession));
+        $('workloadPrompt').hidden = isReady;
+        $('workloadResults').hidden = !isReady;
+        if (!isReady) {
+          $('workloadPrompt').textContent = !state.attendance
+            ? 'Choose your attendance type to calculate a weekly target.'
+            : !state.semester
+              ? 'Choose a semester to calculate a weekly target.'
+              : 'Choose a summer session to calculate a weekly target.';
+          return;
+        }
+        const hoursPerCredit = isSummer ? (state.summerSession === 'ab' ? 7.5 : 3.75) : (state.attendance === 'online' ? 6 : 3);
         const target = state.credits * hoursPerCredit;
         const planned = state.events.filter(e => CATEGORIES[e.category]?.school).reduce((sum,e) => sum + (e.end - e.start) / 60, 0);
         const percent = target ? Math.round(planned / target * 100) : (planned ? 100 : 0);
         $('targetHours').textContent = formatHours(target);
-        $('rateNote').textContent = `${hoursPerCredit} hours per credit for ${state.attendance === 'online' ? 'Online' : 'On Campus'} students`;
+        $('rateNote').textContent = isSummer
+          ? `${hoursPerCredit} hours per credit for Summer Session ${state.summerSession === 'ab' ? 'A/B' : 'C'}`
+          : `${hoursPerCredit} hours per credit for ${state.attendance === 'online' ? 'Online' : 'On Campus'} Fall/Spring students`;
         $('plannedHours').textContent = formatHours(planned);
         $('progressPercent').textContent = `${percent}%`;
         $('progressFill').style.width = `${Math.min(percent,100)}%`;
@@ -472,7 +537,7 @@
         const id = e.currentTarget.dataset.id, event = state.events.find(x => x.id === id);
         if (!event) return;
         const resize = e.target.classList.contains('resize-handle');
-        interaction = { type: resize ? 'resize' : 'move', id, event, originStart: event.start, originEnd: event.end, originX: e.clientX, originY: e.clientY, moved: false };
+        interaction = { type: resize ? 'resize' : 'move', id, event, originDay: event.day, originStart: event.start, originEnd: event.end, originX: e.clientX, originY: e.clientY, moved: false };
         e.currentTarget.setPointerCapture?.(e.pointerId);
         window.addEventListener('pointermove', movePointer); window.addEventListener('pointerup', endPointer, { once: true });
       }
@@ -497,7 +562,7 @@
           const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.day-column');
           if (target) interaction.event.day = Number(target.dataset.day);
         }
-        render();
+        render(false);
       }
       function endPointer() {
         window.removeEventListener('pointermove', movePointer);
@@ -507,7 +572,21 @@
           openEditor(null, { day: data.day, start: data.start, end: Math.max(data.start+30, data.end) });
         } else {
           const data = interaction; interaction = null;
-          if (!data.moved) openEditor(data.event); else { render(); announce(data.type === 'resize' ? 'Activity resized' : 'Activity moved'); }
+          if (!data.moved) {
+            openEditor(data.event);
+          } else {
+            const conflict = findOverlap(data.event, state.events, data.id);
+            if (conflict) {
+              data.event.day = data.originDay;
+              data.event.start = data.originStart;
+              data.event.end = data.originEnd;
+              render();
+              announce(overlapMessage(conflict));
+            } else {
+              render();
+              announce(data.type === 'resize' ? 'Activity resized' : 'Activity moved');
+            }
+          }
         }
       }
 
@@ -536,11 +615,16 @@
         const start = parseTime($('startTime').value), rawEnd = parseTime($('endTime').value), end = rawEnd <= start ? rawEnd + 1440 : rawEnd;
         const editingId = $('editingId').value;
         const base = { title: $('activityTitle').value.trim(), category: $('category').value, color: document.querySelector('[name="color"]:checked').value, start, end, notes: $('notes').value.trim() };
-        if (editingId) {
-          const index = state.events.findIndex(x => x.id === editingId);
-          if (index >= 0) state.events[index] = { ...state.events[index], ...base, day: days[0] };
-          days.slice(1).forEach(day => state.events.push({ id: uid(), ...base, day }));
-        } else days.forEach(day => state.events.push({ id: uid(), ...base, day }));
+        const original = editingId ? state.events.find(x => x.id === editingId) : null;
+        const candidates = days.map((day, index) => ({ ...(index === 0 && original ? original : {}), id: index === 0 && editingId ? editingId : uid(), ...base, day }));
+        const comparisonPool = state.events.filter(event => event.id !== editingId);
+        for (const candidate of candidates) {
+          const conflict = findOverlap(candidate, comparisonPool);
+          if (conflict) return announce(overlapMessage(conflict));
+          comparisonPool.push(candidate);
+        }
+        if (editingId) state.events = state.events.filter(event => event.id !== editingId);
+        state.events.push(...candidates);
         dialog.close(); render(); announce(editingId ? 'Activity updated' : 'Activity added');
       }
       function deleteActivity() {
@@ -557,6 +641,8 @@
 
       $('credits').addEventListener('input', () => { updateProgress(); saveState(); });
       document.querySelectorAll('[name="attendance"]').forEach(input => input.addEventListener('change', () => { updateProgress(); saveState(); }));
+      document.querySelectorAll('[name="semester"]').forEach(input => input.addEventListener('change', () => { updateProgress(); saveState(); }));
+      document.querySelectorAll('[name="summerSession"]').forEach(input => input.addEventListener('change', () => { updateProgress(); saveState(); }));
       $('addBtn').addEventListener('click', () => openEditor());
       $('cancelBtn').addEventListener('click', () => dialog.close());
       $('deleteBtn').addEventListener('click', deleteActivity);
