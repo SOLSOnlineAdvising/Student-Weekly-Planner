@@ -4,7 +4,7 @@ A responsive weekly time-blocking planner for students. It runs entirely in a we
 
 ## Use it
 
-Open `index.html` in Chrome, Edge, Firefox, or Safari. For a public version, upload the file to any static web host such as GitHub Pages, Netlify, or your institution's web server.
+Open `index.html` in Chrome, Edge, Firefox, or Safari or visit https://solsonlineadvising.github.io/Student-Weekly-Planner/ for a public version. NOTE: If you have visited the page before, it is recommended that you refresh the page on your next visit to ensure any changes, updates, or bug fixes are loaded.
 
 ## Included features
 
